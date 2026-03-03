@@ -286,6 +286,9 @@ RCT_EXPORT_MODULE();
     if (params.fileHash()) {
         paramDict[@"fileHash"] = params.fileHash();
     }
+    if (params.channel()) {
+        paramDict[@"channel"] = params.channel();
+    }
 
     HotUpdaterImpl *impl = [HotUpdater sharedImpl];
     [impl updateBundle:paramDict resolver:resolve rejecter:reject];

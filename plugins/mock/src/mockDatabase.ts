@@ -54,6 +54,22 @@ export const mockDatabase = createDatabasePlugin<MockDatabaseConfig>({
           .filter((c, i, self) => self.indexOf(c) === i);
       },
 
+      async getChannelInfo(channel: string) {
+        await sleep(minMax(config.latency.min, config.latency.max));
+        const channelBundles = bundles
+          .filter((b) => b.channel === channel)
+          .sort((a, b) => (b.id > a.id ? 1 : -1));
+
+        if (channelBundles.length === 0) {
+          return null;
+        }
+
+        return {
+          name: channel,
+          bundles: channelBundles,
+        };
+      },
+
       async commitBundle({ changedSets }) {
         if (changedSets.length === 0) {
           return;

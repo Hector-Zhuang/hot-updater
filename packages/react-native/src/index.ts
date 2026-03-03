@@ -4,6 +4,12 @@ import {
   type InternalCheckForUpdateOptions,
 } from "./checkForUpdate";
 import { createDefaultResolver } from "./DefaultResolver";
+import { getBundleChannel } from "./getBundleChannel";
+import {
+  type GetChannelsOptions,
+  getChannels,
+  type InternalGetChannelsOptions,
+} from "./getChannels";
 import {
   addListener,
   clearCrashHistory,
@@ -19,13 +25,14 @@ import {
   updateBundle,
 } from "./native";
 import { hotUpdaterStore } from "./store";
-import type { HotUpdaterResolver } from "./types";
+import type { BundleChannelInfo, HotUpdaterResolver } from "./types";
 import { type HotUpdaterOptions, type InternalWrapOptions, wrap } from "./wrap";
 
 export type { HotUpdaterEvent, NotifyAppReadyResult } from "./native";
 export * from "./store";
 export {
   extractSignatureFailure,
+  type BundleChannelInfo,
   type HotUpdaterResolver,
   isSignatureVerificationError,
   type ResolverCheckUpdateParams,
@@ -67,6 +74,7 @@ function createHotUpdaterClient() {
   // Global configuration stored from wrap
   const globalConfig: {
     resolver: HotUpdaterResolver | null;
+    baseURL?: string;
     requestHeaders?: Record<string, string>;
     requestTimeout?: number;
   } = {
@@ -153,6 +161,8 @@ function createHotUpdaterClient() {
       }
 
       globalConfig.resolver = normalizedOptions.resolver;
+      globalConfig.baseURL =
+        "baseURL" in options && options.baseURL ? options.baseURL : undefined;
       globalConfig.requestHeaders = options.requestHeaders;
       globalConfig.requestTimeout = options.requestTimeout;
 
@@ -355,6 +365,62 @@ function createHotUpdaterClient() {
      * ```
      */
     clearCrashHistory,
+
+    /**
+     * Fetches the list of available channels from the update server.
+     *
+     * @param {Object} options - Configuration options for the request
+     * @param {Record<string, string>} [options.requestHeaders] - Optional request headers
+     * @param {number} [options.requestTimeout] - Request timeout in milliseconds (default: 5000)
+     * @param {(error: Error) => void} [options.onError] - Error callback
+     *
+     * @returns {Promise<string[] | null>} Array of channel names or null on error
+     *
+     * @example
+     * ```ts
+     * const channels = await HotUpdater.getChannels();
+     * ```
+     */
+    getChannels: (options: GetChannelsOptions = {}) => {
+      if (!globalConfig.baseURL) {
+        const error = new Error(
+          "[HotUpdater] getChannels requires baseURL to be configured. " +
+            "Please use HotUpdater.wrap() with baseURL option.",
+        );
+        options.onError?.(error);
+        return Promise.resolve(null);
+      }
+
+      const mergedOptions: InternalGetChannelsOptions = {
+        ...options,
+        baseURL: globalConfig.baseURL,
+        requestHeaders: {
+          ...globalConfig.requestHeaders,
+          ...options.requestHeaders,
+        },
+        requestTimeout: options.requestTimeout ?? globalConfig.requestTimeout,
+      };
+
+      return getChannels(mergedOptions);
+    },
+
+    /**
+     * Gets bundle channel information with a switch function.
+     *
+     * @param {string} channelName - The name of the channel (e.g., "production", "staging")
+     *
+     * @returns {BundleChannelInfo} Channel information with switch function
+     *
+     * @example
+     * ```ts
+     * const channel = HotUpdater.getBundleChannel('production');
+     * console.log(`Channel: ${channel.name}, Version: ${channel.version}`);
+     *
+     * // Switch to a different channel
+     * await channel.switch();
+     * ```
+     */
+    getBundleChannel,
   };
 }
 

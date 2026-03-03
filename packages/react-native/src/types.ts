@@ -196,3 +196,18 @@ export function extractSignatureFailure(
     error: normalizedError,
   };
 }
+
+/**
+ * Information about a bundle channel
+ */
+export interface BundleChannelInfo {
+  /**
+   * The channel name
+   */
+  name: string;
+
+  /**
+   * The app version for this channel (or null if unavailable)
+   */
+  version: string | null;
+}

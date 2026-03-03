@@ -35,17 +35,37 @@ import { getDefaultTargetAppVersion } from "@/utils/version/getDefaultTargetAppV
 import { getNativeAppVersion } from "@/utils/version/getNativeAppVersion";
 import { getConsolePort, openConsole } from "./console";
 
+/**
+ * Configuration options for the deploy command
+ * 
+ * Controls how a bundle is built, compressed, signed, and deployed to the server
+ */
 export interface DeployOptions {
+  /** Path where the compiled bundle should be saved (defaults to .hot-updater/output) */
   bundleOutputPath?: string;
+  /** Release channel name (e.g., "production", "staging", "development") */
   channel: string;
+  /** Force all clients to immediately install this update (no user choice) */
   forceUpdate: boolean;
+  /** Enable interactive prompts for missing options */
   interactive: boolean;
+  /** User-provided message describing changes in this deployment */
   message?: string;
+  /** Disable this deployment (bundle won't be served to clients) */
   disabled?: boolean;
+  /** Target platform: "ios" or "android" */
   platform?: Platform;
+  /** Semantic version that this bundle targets (e.g., "1.0.0", "1.x.x") */
   targetAppVersion?: string;
 }
 
+/**
+ * Maps compression strategy names to file extensions
+ * Used when naming the final bundle file
+ * 
+ * @param compressStrategy - Compression algorithm name
+ * @returns File extension including the dot (e.g., ".tar.br", ".zip")
+ */
 const getExtensionFromCompressStrategy = (compressStrategy: string) => {
   switch (compressStrategy) {
     case "tar.br":
@@ -59,23 +79,47 @@ const getExtensionFromCompressStrategy = (compressStrategy: string) => {
   }
 };
 
+/**
+ * Main deployment workflow orchestrator
+ * 
+ * This function implements the complete OTA update deployment pipeline:
+ * 
+ * 1. **Configuration Loading**: Load deployment config for the specified platform/channel
+ * 2. **Validation**: Verify signing configuration and fingerprint state
+ * 3. **Build**: Compile the bundle using the configured build plugin
+ * 4. **Compress**: Package bundle files using tar.br, tar.gz, or zip
+ * 5. **Sign**: Create cryptographic signature if signing is enabled
+ * 6. **Upload**: Transfer bundle to cloud storage (S3, R2, Firebase, etc.)
+ * 7. **Database**: Record bundle metadata in database for client queries
+ * 8. **Console**: Open web UI showing deployment details (if interactive)
+ * 
+ * Error handling: Any failure triggers cleanup (removes partial bundle file)
+ * Success: Opens console URL and displays deployment summary
+ * 
+ * @param options - Deployment configuration from CLI
+ * @throws Will exit process on critical errors (missing config, validation failures, signing errors)
+ */
 export const deploy = async (options: DeployOptions) => {
+  // Display Hot Updater banner and version
   printBanner();
 
   const cwd = getCwd();
 
+  // Get git information for bundle metadata (helps trace deployed code)
   const gitCommit = await getLatestGitCommit();
   const [gitCommitHash, gitMessage] = [
     gitCommit?.id() ?? null,
     gitCommit?.summary() ?? null,
   ];
 
+  // Determine target platform (iOS or Android)
   const platform =
     options.platform ??
     (options.interactive
       ? await getPlatform("Which platform do you want to deploy?")
       : null);
 
+  // User cancelled platform selection in interactive mode
   if (p.isCancel(platform)) {
     return;
   }
@@ -89,13 +133,16 @@ export const deploy = async (options: DeployOptions) => {
 
   const channel = options.channel;
 
+  // Load configuration from hot-updater.config.ts or hot-updater.config.js
+  // Configuration includes build, storage, database, and signing settings
   const config = await loadConfig({ platform, channel });
   if (!config) {
     console.error("No config found. Please run `hot-updater init` first.");
     process.exit(1);
   }
 
-  // Validate signing configuration
+  // Validate signing configuration before proceeding
+  // Ensures private keys exist and are properly configured
   const signingValidation = await validateSigningConfig(config);
 
   if (signingValidation.issues.length > 0) {
@@ -104,6 +151,7 @@ export const deploy = async (options: DeployOptions) => {
       (i) => i.type === "warning",
     );
 
+    // Errors block deployment, must be fixed first
     if (errors.length > 0) {
       console.log("");
       p.log.error("Signing configuration error:");
@@ -118,6 +166,7 @@ export const deploy = async (options: DeployOptions) => {
       process.exit(1);
     }
 
+    // Warnings are shown but don't block deployment
     if (warnings.length > 0) {
       console.log("");
       p.log.warn("Signing configuration warning:");
@@ -129,6 +178,8 @@ export const deploy = async (options: DeployOptions) => {
     }
   }
 
+  // Determine which "version" of the app this bundle targets
+  // Two strategies: fingerprint-based (native code changes) or version-based (app version)
   const target: {
     appVersion: string | null;
     fingerprintHash: string | null;
@@ -138,26 +189,38 @@ export const deploy = async (options: DeployOptions) => {
   };
   p.log.step(`Channel: ${channel}`);
 
+  // **Strategy 1: Fingerprint-based updates**
+  // Used when native code (iOS/Android) changes require app recompilation
+  // Detects changes in native dependencies, build config, native source code, etc.
   if (config.updateStrategy === "fingerprint") {
     const s = p.spinner();
     s.start(`Fingerprinting (${platform})`);
+    
+    // Verify fingerprint.json exists (created by "fingerprint create" command)
     if (!fs.existsSync(path.join(cwd, "fingerprint.json"))) {
       s.error(
         "Fingerprint.json not found. Please run 'hot-updater fingerprint create' to update fingerprint.json",
       );
       process.exit(1);
     }
+    
+    // Calculate current native code fingerprint
     const newFingerprint = await nativeFingerprint(cwd, {
       platform,
       ...config.fingerprint,
     });
+    
+    // Read the fingerprint saved in the git repository
     const projectFingerprint = await readLocalFingerprint();
+    
+    // Verify that the current code matches the stored fingerprint
+    // If not, native code has changed and requires recompilation
     if (!isFingerprintEquals(newFingerprint, projectFingerprint?.[platform])) {
       s.error(
         "Fingerprint mismatch. 'hot-updater fingerprint create' to update fingerprint.json",
       );
 
-      // Show what changed
+      // Show what native changes were detected
       if (projectFingerprint?.[platform]) {
         try {
           const diff = await getFingerprintDiff(projectFingerprint[platform], {
@@ -176,9 +239,13 @@ export const deploy = async (options: DeployOptions) => {
     target.fingerprintHash = newFingerprint.hash;
     s.stop(`Fingerprint(${platform}): ${newFingerprint.hash}`);
   } else {
+    // **Strategy 2: App version-based updates**
+    // Used when only JavaScript/bundle code changes
+    // Native code version stays the same, only JS is updated
     const defaultTargetAppVersion =
       (await getDefaultTargetAppVersion(platform)) ?? "1.0.0";
 
+    // Ask user which app version this bundle targets
     const targetAppVersion =
       options.targetAppVersion ??
       (options.interactive
@@ -187,6 +254,7 @@ export const deploy = async (options: DeployOptions) => {
             placeholder: defaultTargetAppVersion,
             initialValue: defaultTargetAppVersion,
             validate: (value) => {
+              // Validate semantic version format
               if (!semverValid(value)) {
                 return "Invalid semver format (e.g. 1.0.0, 1.x.x)";
               }
@@ -210,6 +278,7 @@ export const deploy = async (options: DeployOptions) => {
     target.appVersion = targetAppVersion;
   }
 
+  // Ensure we have a target version (either fingerprint or app version)
   if (!target.fingerprintHash && !target.appVersion) {
     if (config.updateStrategy === "fingerprint") {
       p.log.error(
@@ -223,6 +292,7 @@ export const deploy = async (options: DeployOptions) => {
     process.exit(1);
   }
 
+  // Add .hot-updater/output to .gitignore to prevent committing bundle artifacts
   if (
     appendToProjectRootGitignore({
       globLines: [HotUpdateDirUtil.outputGitignorePath],
@@ -241,6 +311,7 @@ export const deploy = async (options: DeployOptions) => {
     ? outputPath
     : path.join(cwd, outputPath);
 
+  // Determine file extension based on compression strategy
   const compressStrategy = config.compressStrategy;
   const bundleExtension = getExtensionFromCompressStrategy(compressStrategy);
   const bundlePath = path.join(
@@ -249,6 +320,8 @@ export const deploy = async (options: DeployOptions) => {
     `bundle${bundleExtension}`,
   );
 
+  // Initialize plugins: Build, Storage, Database
+  // These are loaded from hot-updater.config.ts based on user configuration
   const [buildPlugin, storagePlugin, databasePlugin] = await Promise.all([
     config.build({
       cwd,
@@ -258,6 +331,7 @@ export const deploy = async (options: DeployOptions) => {
   ]);
 
   try {
+    // Track intermediate results across tasks
     const taskRef: {
       buildResult: {
         buildPath: string;
@@ -270,24 +344,34 @@ export const deploy = async (options: DeployOptions) => {
       storageUri: null,
     };
 
+    /**
+     * TASK 1: Build Bundle
+     * Compiles the React Native bundle using the configured build plugin
+     * Supports: Metro (bare React Native), Re.Pack, Expo, etc.
+     */
     await p.tasks([
       {
         title: `📦 Building Bundle (${buildPlugin.name})`,
         task: async () => {
+          // Call build plugin to compile the JavaScript bundle
           taskRef.buildResult = await buildPlugin.build({
             platform: platform,
           });
 
+          // Create output directory if it doesn't exist
           await fs.promises.mkdir(normalizeOutputPath, { recursive: true });
 
           const buildPath = taskRef.buildResult?.buildPath;
           if (!buildPath) {
             throw new Error("Build result not found");
           }
+          
+          // Get all built files (bundle, assets, source maps, etc.)
           const files = await fs.promises.readdir(buildPath, {
             recursive: true,
           });
 
+          // Filter to only actual files (exclude directories)
           const targetFiles = await getBundleZipTargets(
             buildPath,
             files
@@ -297,21 +381,24 @@ export const deploy = async (options: DeployOptions) => {
               )
               .map((file) => path.join(buildPath, file)),
           );
-
+          // Compress bundle files based on configured strategy (tar.br, tar.gz, or zip)
           switch (compressStrategy) {
             case "tar.br":
+              // Brotli compression: smallest file size, best for mobile networks
               await createTarBrTargetFiles({
                 outfile: bundlePath,
                 targetFiles: targetFiles,
               });
               break;
             case "tar.gz":
+              // Gzip compression: good balance of speed and compression ratio
               await createTarGzTargetFiles({
                 outfile: bundlePath,
                 targetFiles: targetFiles,
               });
               break;
             case "zip":
+              // ZIP format: compatible with older clients, reasonable compression
               await createZipTargetFiles({
                 outfile: bundlePath,
                 targetFiles: targetFiles,
@@ -323,10 +410,18 @@ export const deploy = async (options: DeployOptions) => {
               );
           }
 
+          // Store bundle ID from build plugin (used for storage URI)
           bundleId = taskRef.buildResult.bundleId;
+          
+          // Calculate SHA-256 hash of the compressed bundle file
+          // This hash is critical for:
+          // 1. Integrity verification: clients verify bundle wasn't corrupted
+          // 2. Duplicate detection: same content = same hash
+          // 3. Signing: the hash is what actually gets signed, not the entire file
           fileHash = await getFileHashFromFile(bundlePath);
 
-          // Sign bundle if signing is enabled
+          // Sign the bundle if signing is enabled in configuration
+          // Cryptographic signatures prevent tampering and prove authenticity
           if (config.signing?.enabled) {
             // Runtime validation: ensure privateKeyPath is provided when signing is enabled
             if (!config.signing.privateKeyPath) {
@@ -340,12 +435,14 @@ export const deploy = async (options: DeployOptions) => {
             s.start("Signing bundle");
 
             try {
+              // Create RSA-SHA256 signature of the file hash
+              // The signature proves you authorized this bundle
               const signature = await signBundle(
                 fileHash,
                 config.signing.privateKeyPath,
               );
               // Store signature in signed format (sig:<signature>)
-              // The hash is verified implicitly during signature verification
+              // When clients get this, they can verify it using your public key
               fileHash = createSignedFileHash(signature);
               s.stop("Bundle signed successfully");
             } catch (error) {
@@ -367,10 +464,15 @@ export const deploy = async (options: DeployOptions) => {
       },
     ]);
 
+    // Display build plugin's output message if available
     if (taskRef.buildResult?.stdout) {
       p.log.success(taskRef.buildResult.stdout);
     }
 
+    /**
+     * TASK 2: Upload to Storage & Update Database (parallel tasks)
+     * These run in parallel for efficiency
+     */
     await p.tasks([
       {
         title: `📦 Uploading to Storage (${storagePlugin.name})`,
@@ -380,6 +482,9 @@ export const deploy = async (options: DeployOptions) => {
           }
 
           try {
+            // Call storage plugin to upload the compressed bundle
+            // Plugins support: AWS S3, Cloudflare R2, Firebase Storage, Supabase, etc.
+            // Returns a storageUri that clients will use to download the bundle
             const { storageUri } = await storagePlugin.upload(
               bundleId,
               bundlePath,
@@ -403,29 +508,35 @@ export const deploy = async (options: DeployOptions) => {
           if (!taskRef.storageUri) {
             throw new Error("Storage URI not found");
           }
+          
+          // Get the native app version (extracted from build.gradle or Info.plist)
           const appVersion = await getNativeAppVersion(platform);
 
           try {
+            // Record this bundle in the database so clients can query for updates
+            // Plugins support: Supabase, PostgreSQL, Cloudflare D1, Firebase, etc.
             await databasePlugin.appendBundle({
-              shouldForceUpdate: options.forceUpdate,
+              shouldForceUpdate: options.forceUpdate, // Force install without user input
               platform,
-              fileHash,
-              gitCommitHash,
-              message: options?.message ?? gitMessage,
-              id: bundleId,
-              enabled: !options.disabled,
-              channel,
-              targetAppVersion: target.appVersion,
-              fingerprintHash: target.fingerprintHash,
-              storageUri: taskRef.storageUri,
+              fileHash, // For integrity verification and signing
+              gitCommitHash, // Track which commit was deployed
+              message: options?.message ?? gitMessage, // User-facing changelog message
+              id: bundleId, // Unique identifier for this deployment
+              enabled: !options.disabled, // Can temporarily disable deployments
+              channel, // Release track (production, staging, etc.)
+              targetAppVersion: target.appVersion, // Only serve to apps with this version
+              fingerprintHash: target.fingerprintHash, // Native code version fingerprint
+              storageUri: taskRef.storageUri, // Where clients download from
               metadata: {
                 ...(appVersion
                   ? {
+                      // Include the native app version for reference
                       app_version: appVersion,
                     }
                   : {}),
               },
             });
+            // Commit the transaction to the database
             await databasePlugin.commitBundle();
           } catch (e) {
             if (e instanceof Error) {
@@ -433,20 +544,29 @@ export const deploy = async (options: DeployOptions) => {
             }
             throw e;
           }
+          // Clean up database resources
           await databasePlugin.onUnmount?.();
 
           return `✅ Update Complete (${databasePlugin.name})`;
         },
       },
     ]);
+    
     if (!bundleId) {
       throw new Error("Bundle ID not found");
     }
 
+    /**
+     * TASK 3: Open Web Console (if interactive mode)
+     * The console UI allows viewing, testing, and managing deployments
+     */
     if (options.interactive) {
       const port = await getConsolePort(config);
+      // Check if console server is already running
       const isConsoleOpen = await isPortReachable(port, { host: "localhost" });
 
+      // Build console URL with deployment details
+      // Shows the newly deployed bundle in the console
       const openUrl = new URL(`http://localhost:${port}`);
       openUrl.searchParams.set("channel", channel);
       openUrl.searchParams.set("platform", platform);
@@ -456,16 +576,19 @@ export const deploy = async (options: DeployOptions) => {
 
       const note = `Console: ${url}`;
       if (!isConsoleOpen) {
+        // Offer to start console server if not already running
         const result = await p.confirm({
           message: "Console server is not running. Would you like to start it?",
           initialValue: false,
         });
         if (!p.isCancel(result) && result) {
+          // Start console server and open browser automatically
           await openConsole(port, () => {
             void open(url);
           });
         }
       } else {
+        // Console server is already running, just open the URL
         void open(url);
       }
 
@@ -473,11 +596,13 @@ export const deploy = async (options: DeployOptions) => {
     }
     p.outro("🚀 Deployment Successful");
   } catch (e) {
+    // Cleanup on error: remove partial bundle file and close database
     await databasePlugin.onUnmount?.();
     await fs.promises.rm(bundlePath, { force: true });
     console.error(e);
     process.exit(1);
   } finally {
+    // Cleanup in all cases: close database connection
     await databasePlugin.onUnmount?.();
   }
 };

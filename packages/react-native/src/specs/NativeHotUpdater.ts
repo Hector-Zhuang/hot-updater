@@ -14,6 +14,7 @@ export interface UpdateBundleParams {
    * Native determines verification mode by checking for "sig:" prefix.
    */
   fileHash: string | null;
+  channel?: string;
 }
 
 export interface Spec extends TurboModule {

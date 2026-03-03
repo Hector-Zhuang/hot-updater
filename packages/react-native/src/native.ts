@@ -101,12 +101,18 @@ export async function updateBundle(
       ? undefined
       : paramsOrBundleId.fileHash;
 
+  const targetChannel =
+    typeof paramsOrBundleId === "string"
+      ? undefined
+      : paramsOrBundleId.channel;
+
   const promise = (async () => {
     try {
       const ok = await HotUpdaterNative.updateBundle({
         bundleId: updateBundleId,
         fileUrl: targetFileUrl,
         fileHash: targetFileHash ?? null,
+        channel: targetChannel,
       });
       if (ok) {
         lastInstalledBundleId = updateBundleId;
@@ -161,6 +167,7 @@ export const getBundleId = (): string => {
 
 /**
  * Fetches the channel for the app.
+ * Note: Channel is updated when updateBundle is called with a channel parameter.
  *
  * @returns {string} Resolves with the channel or null if not available.
  */

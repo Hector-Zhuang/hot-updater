@@ -122,6 +122,42 @@ export const supabaseDatabase = createDatabasePlugin<SupabaseDatabaseConfig>({
         return data.map((bundle: { channel: string }) => bundle.channel);
       },
 
+      async getChannelInfo(channel: string) {
+        const { data, error } = await supabase
+          .from("bundles")
+          .select(
+            "id, channel, enabled, platform, should_force_update, file_hash, git_commit_hash, message, fingerprint_hash, target_app_version, storage_uri, metadata",
+          )
+          .eq("channel", channel)
+          .order("id", { ascending: false });
+
+        if (error) {
+          throw error;
+        }
+
+        if (!data || data.length === 0) {
+          return null;
+        }
+
+        return {
+          name: channel,
+          bundles: data.map((bundle) => ({
+            channel: bundle.channel,
+            enabled: bundle.enabled,
+            shouldForceUpdate: bundle.should_force_update,
+            fileHash: bundle.file_hash,
+            gitCommitHash: bundle.git_commit_hash,
+            id: bundle.id,
+            message: bundle.message,
+            platform: bundle.platform,
+            targetAppVersion: bundle.target_app_version,
+            fingerprintHash: bundle.fingerprint_hash,
+            storageUri: bundle.storage_uri,
+            metadata: bundle.metadata ?? {},
+          })),
+        };
+      },
+
       async commitBundle({ changedSets }) {
         if (changedSets.length === 0) {
           return;

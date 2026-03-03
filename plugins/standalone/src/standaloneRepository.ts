@@ -14,6 +14,7 @@ export interface Routes {
   list: () => RouteConfig;
   retrieve: (bundleId: string) => RouteConfig;
   delete: (bundleId: string) => RouteConfig;
+  channels?: () => RouteConfig;
 }
 
 const defaultRoutes: Routes = {
@@ -30,6 +31,10 @@ const defaultRoutes: Routes = {
   }),
   delete: (bundleId: string) => ({
     path: `/api/bundles/${bundleId}`,
+  }),
+  channels: () => ({
+    path: "/api/bundles/channels",
+    headers: { "Cache-Control": "no-cache" },
   }),
 };
 
@@ -68,6 +73,8 @@ export const standaloneRepository =
             defaultRoutes.delete(bundleId),
             config.routes?.delete?.(bundleId),
           ),
+        channels: () =>
+          createRoute(defaultRoutes.channels!(), config.routes?.channels?.()),
       };
 
       const buildUrl = (path: string) => `${config.baseUrl}${path}`;
@@ -133,8 +140,27 @@ export const standaloneRepository =
           };
         },
         async getChannels(): Promise<string[]> {
-          const result = await this.getBundles({ limit: 50, offset: 0 });
-          return [...new Set(result.data.map((b: Bundle) => b.channel))];
+          const { path, headers: routeHeaders } =
+            routes.channels?.() ?? defaultRoutes.channels!();
+
+          const response = await fetch(buildUrl(path), {
+            method: "GET",
+            headers: getHeaders(routeHeaders),
+          });
+
+          if (!response.ok) {
+            throw new Error(`API Error: ${response.statusText}`);
+          }
+
+          const data = (await response.json()) as
+            | { channels: string[] }
+            | string[];
+
+          if (Array.isArray(data)) {
+            return [...new Set(data)];
+          }
+
+          return [...new Set(data.channels ?? [])];
         },
         async commitBundle({ changedSets }) {
           if (changedSets.length === 0) {

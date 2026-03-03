@@ -1,32 +1,53 @@
+/**
+ * Platform types supported by Hot Updater
+ * iOS: Apple iOS mobile platform
+ * Android: Google Android mobile platform
+ */
 export type Platform = "ios" | "android";
 
+/**
+ * Metadata associated with a bundle deployment
+ * Can store additional information like the target app version
+ */
 export type BundleMetadata = {
   app_version?: string;
 };
 
+/**
+ * Core data structure representing an over-the-air (OTA) update bundle
+ * This is the main entity that gets deployed and distributed to mobile devices
+ * Contains all necessary information for the client to verify and download updates
+ */
 export interface Bundle {
   /**
-   * The unique identifier for the bundle. uuidv7
+   * The unique identifier for the bundle. Uses UUIDv7 format for ordering by timestamp
    */
   id: string;
   /**
-   * The platform the bundle is for.
+   * The platform the bundle is for (iOS or Android).
+   * Allows the system to manage different bundles for different platforms
    */
   platform: Platform;
   /**
-   * Whether the bundle should force an update.
+   * Whether the bundle should force an update on the client side
+   * When true, the app will immediately replace its current bundle regardless of user preferences
    */
   shouldForceUpdate: boolean;
   /**
-   * Whether the bundle is enabled.
+   * Whether the bundle is enabled and available for distribution
+   * Disabled bundles will not be served to clients even if they match all other criteria
    */
   enabled: boolean;
   /**
-   * The hash of the bundle.
+   * The SHA-256 hash of the bundle file
+   * Used for integrity verification: clients compute the hash of downloaded bundle
+   * and compare it with this value to ensure the bundle wasn't corrupted or tampered with
    */
   fileHash: string;
   /**
-   * The storage key of the bundle.
+   * The storage location URI of the bundle
+   * Could be in AWS S3, Cloudflare R2, Firebase Storage, or any other supported provider
+   * Format examples:
    * @example "s3://my-bucket/my-app/00000000-0000-0000-0000-000000000000/bundle.zip"
    * @example "r2://my-bucket/my-app/00000000-0000-0000-0000-000000000000/bundle.zip"
    * @example "firebase-storage://my-bucket/my-app/00000000-0000-0000-0000-000000000000/bundle.zip"
@@ -34,35 +55,41 @@ export interface Bundle {
    */
   storageUri: string;
   /**
-   * The git commit hash of the bundle.
+   * The git commit hash associated with this bundle
+   * Useful for tracing back which exact code version was deployed
+   * Null if the bundle was created outside a git repository
    */
   gitCommitHash: string | null;
   /**
-   * The message of the bundle.
+   * User-provided message describing the bundle (e.g., "Fixed login bug", "Performance improvements")
+   * Helps teams track what changes are in each deployment
    */
   message: string | null;
   /**
-   * The name of the channel where the bundle is deployed.
-   *
-   * Examples:
-   * - production: Production channel for end users
-   * - development: Development channel for testing
-   * - staging: Staging channel for quality assurance before production
-   * - app-name: Channel for specific app instances (e.g., my-app, app-test)
-   *
-   * Different channel values can be used based on each app's requirements.
+   * The deployment channel name
+   * Allows organizing updates into different release tracks
+   * Common examples:
+   * - "production": Production channel for end users
+   * - "development": Development channel for testing
+   * - "staging": Staging channel for QA before production
+   * - "app-name": Channel for specific app instances (e.g., "my-app", "app-test")
    */
   channel: string;
   /**
-   * The target app version of the bundle.
+   * Target native app version for this bundle
+   * Updates are only offered to apps with matching version
+   * Uses semantic versioning (e.g., "1.0.0")
+   * Null means the bundle is compatible with all versions
    */
   targetAppVersion: string | null;
   /**
-   * The fingerprint hash of the bundle.
+   * The fingerprint hash of the native parts (iOS/Android native code and assets)
+   * Used to detect if native code changes require the app to be rebuilt
+   * Different from file hash: fingerprint identifies code changes that must be compiled
    */
   fingerprintHash: string | null;
   /**
-   * The metadata of the bundle.
+   * Additional metadata associated with the bundle
    */
   metadata?: BundleMetadata;
 }
@@ -85,15 +112,36 @@ export type SnakeCaseBundle = SnakeKeyObject<Bundle>;
 export type UpdateStatus = "ROLLBACK" | "UPDATE";
 
 /**
- * The update info for the database layer.
- * This is the update info that is used by the database.
+ * Represents the update status and metadata for a specific device/app instance
+ * This is what the database returns to clients when they check for updates
+ * 
+ * The database layer converts Bundle to UpdateInfo, filtering sensitive fields
+ * and focusing on what the client needs to know
  */
 export interface UpdateInfo {
+  /**
+   * Unique identifier for this update record
+   */
   id: string;
+  /**
+   * Whether the app should immediately install this update without user consent
+   */
   shouldForceUpdate: boolean;
+  /**
+   * User message explaining this update (shown in UI)
+   */
   message: string | null;
+  /**
+   * The action status: UPDATE for new version, ROLLBACK to downgrade
+   */
   status: UpdateStatus;
+  /**
+   * URL/URI where the client can download the bundle from
+   */
   storageUri: string | null;
+  /**
+   * Hash for verifying bundle integrity after download
+   */
   fileHash: string | null;
 }
 

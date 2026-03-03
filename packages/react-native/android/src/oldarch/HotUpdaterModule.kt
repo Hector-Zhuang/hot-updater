@@ -78,6 +78,7 @@ class HotUpdaterModule internal constructor(
                 }
 
                 val fileHash = params.getString("fileHash")
+                val channel = params.getString("channel")
 
                 val impl = getInstance()
 
@@ -85,6 +86,7 @@ class HotUpdaterModule internal constructor(
                     bundleId,
                     fileUrl,
                     fileHash,
+                    channel,
                 ) { progress ->
                     // Post to Main thread for React Native event emission
                     Handler(Looper.getMainLooper()).post {
@@ -130,7 +132,7 @@ class HotUpdaterModule internal constructor(
         val constants: MutableMap<String, Any?> = HashMap()
         constants["MIN_BUNDLE_ID"] = HotUpdater.getMinBundleId()
         constants["APP_VERSION"] = HotUpdater.getAppVersion(mReactApplicationContext)
-        constants["CHANNEL"] = HotUpdater.getChannel(mReactApplicationContext)
+        constants["CHANNEL"] = getInstance().getChannel()
         constants["FINGERPRINT_HASH"] = HotUpdater.getFingerprintHash(mReactApplicationContext)
         return constants
     }

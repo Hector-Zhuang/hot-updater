@@ -115,6 +115,41 @@ export const firebaseDatabase = createDatabasePlugin<admin.AppOptions>({
         return Array.from(channels);
       },
 
+      async getChannelInfo(channel: string) {
+        const bundlesCollection = db.collection("bundles");
+        const querySnapshot = await bundlesCollection
+          .where("channel", "==", channel)
+          .orderBy("id", "desc")
+          .get();
+
+        if (querySnapshot.empty) {
+          return null;
+        }
+
+        const bundles = querySnapshot.docs.map((doc) => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            channel: data.channel,
+            enabled: data.enabled,
+            shouldForceUpdate: data.should_force_update,
+            fileHash: data.file_hash,
+            gitCommitHash: data.git_commit_hash,
+            message: data.message,
+            platform: data.platform,
+            targetAppVersion: data.target_app_version,
+            fingerprintHash: data.fingerprint_hash,
+            storageUri: data.storage_uri,
+            metadata: data.metadata ?? {},
+          } as Bundle;
+        });
+
+        return {
+          name: channel,
+          bundles,
+        };
+      },
+
       async commitBundle({ changedSets }) {
         if (changedSets.length === 0) {
           return;
